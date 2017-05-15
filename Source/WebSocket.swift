@@ -201,11 +201,14 @@ public enum WebSocketError : Error, CustomStringConvertible {
     case needMoreInput
     case invalidHeader
     case invalidAddress
-    case network(String)
+    case timedOut
+    case pinnedKeyNotInCertChain
+    case streamEnded
+    case network(Error)
     case libraryError(String)
     case payloadError(String)
     case protocolError(String)
-    case invalidResponse(String)
+    case invalidResponse(String, httpStatus:Int?)
     case invalidCompressionOptions(String)
     public var description : String {
         switch self {
@@ -213,22 +216,25 @@ public enum WebSocketError : Error, CustomStringConvertible {
         case .needMoreInput: return "NeedMoreInput"
         case .invalidAddress: return "InvalidAddress"
         case .invalidHeader: return "InvalidHeader"
-        case let .invalidResponse(details): return "InvalidResponse(\(details))"
+        case .timedOut: return "TimedOut"
+        case .streamEnded: return "StreamEnded"
+        case .pinnedKeyNotInCertChain: return "PinnedKeyNotInCertChain"
+        case let .invalidResponse(details, _): return "InvalidResponse(\(details))"
         case let .invalidCompressionOptions(details): return "InvalidCompressionOptions(\(details))"
         case let .libraryError(details): return "LibraryError(\(details))"
         case let .protocolError(details): return "ProtocolError(\(details))"
         case let .payloadError(details): return "PayloadError(\(details))"
-        case let .network(details): return "Network(\(details))"
+        case let .network(error): return "Network(\(error))"
         }
     }
     public var details : String {
         switch self {
-        case .invalidResponse(let details): return details
+        case .invalidResponse(let details, _): return details
         case .invalidCompressionOptions(let details): return details
         case .libraryError(let details): return details
         case .protocolError(let details): return details
         case .payloadError(let details): return details
-        case .network(let details): return details
+        case .network(let error): return error.localizedDescription
         default: return ""
         }
     }
@@ -800,13 +806,11 @@ private class InnerWebSocket: Hashable {
                 var frame : Frame?
                 if let error = error as? WebSocketError{
                     switch error {
-                    case .network(let details):
-                        if details == atEndDetails{
-                            stage = .closeConn
-                            frame = Frame.makeClose(1006, reason: "Abnormal Closure")
-                            atEnd = true
-                            finalError = nil
-                        }
+                    case .streamEnded:
+                        stage = .closeConn
+                        frame = Frame.makeClose(1006, reason: "Abnormal Closure")
+                        atEnd = true
+                        finalError = nil
                     case .protocolError:
                         frame = Frame.makeClose(1002, reason: "Protocol error")
                     case .payloadError:
@@ -842,7 +846,7 @@ private class InnerWebSocket: Hashable {
                 if atEnd {
                     return;
                 }
-                throw WebSocketError.network(atEndDetails)
+                throw WebSocketError.streamEnded
             }
             if more {
                 while rd.hasBytesAvailable {
@@ -880,13 +884,13 @@ private class InnerWebSocket: Hashable {
     func stepStreamErrors() throws {
         if finalError == nil {
             if connectionTimeout {
-                throw WebSocketError.network(timeoutDetails)
+                throw WebSocketError.timedOut
             }
             if let error = rd?.streamError {
-                throw WebSocketError.network(error.localizedDescription)
+                throw WebSocketError.network(error)
             }
             if let error = wr?.streamError {
-                throw WebSocketError.network(error.localizedDescription)
+                throw WebSocketError.network(error)
             }
         }
     }
@@ -1142,7 +1146,13 @@ private class InnerWebSocket: Hashable {
             let line = trim(lines[i])
             if i == 0  {
                 if !line.hasPrefix("HTTP/1.1 101"){
-                    throw WebSocketError.invalidResponse(line)
+                    let components = line.components(separatedBy: CharacterSet.whitespaces)
+                    var httpStatus:Int? = nil
+                    if components.count > 1 {
+                        let statusString = components[1]
+                        httpStatus = Int(statusString)
+                    }
+                    throw WebSocketError.invalidResponse(line, httpStatus: httpStatus)
                 }
             } else if line != "" {
                 var value = ""
@@ -1215,7 +1225,7 @@ private class InnerWebSocket: Hashable {
             }
         }
         
-        throw WebSocketError.invalidResponse("Failed SSL public key pinning verification")
+        throw WebSocketError.pinnedKeyNotInCertChain
     }
     
     private func publicKeys(from trust: SecTrust) -> [SecKey] {
