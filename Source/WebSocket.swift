@@ -559,7 +559,7 @@ private class InnerWebSocket: Hashable {
     var _allowSelfSignedSSL = false
     var _services = WebSocketService.None
     var _event = WebSocketEvents()
-    var _eventDelegate: WebSocketDelegate?
+    weak var _eventDelegate: WebSocketDelegate?
     var _binaryType = WebSocketBinaryType.uInt8Array
     var _readyState = WebSocketReadyState.closed
     var _networkTimeout = TimeInterval(-1)
